@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+torch
+Pillow
+open_clip_torch
+sentence_transformers
+facenet_pytorch
+opencv-python-headless
