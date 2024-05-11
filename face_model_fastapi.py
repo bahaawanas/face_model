@@ -3,7 +3,6 @@
 #!git clone https://github.com/timesler/facenet-pytorch.git facenet_pytorch
 
 
-
 import os
 import logging
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -14,8 +13,7 @@ import open_clip
 from sentence_transformers import util
 from facenet_pytorch import MTCNN, InceptionResnetV1
 import io
-import cv2
-import uvicorn  # Add this import
+import uvicorn
 
 # Initialize FastAPI
 app = FastAPI()
@@ -23,11 +21,20 @@ app = FastAPI()
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
-# Load the models
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-16-plus-240', pretrained="laion400m_e32")
-model.to(device)
-resnet = InceptionResnetV1(pretrained='vggface2').eval()
+# Lazy load models
+model = None
+resnet = None
+mtcnn = None
+
+def load_models():
+    global model, resnet, mtcnn
+    if model is None:
+        model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-16-plus-240', pretrained="laion400m_e32")
+        model.to(device)
+    if resnet is None:
+        resnet = InceptionResnetV1(pretrained='vggface2').eval()
+    if mtcnn is None:
+        mtcnn = MTCNN(image_size=160, margin=0)
 
 def imageEncoder(img):
     logging.debug("Encoding image...")
@@ -44,8 +51,6 @@ def crop_comp_img(person, person_id):
     person_crop_path = "person_crop.jpg"
     person_id_crop_path = "person_id_crop.jpg"
     
-    mtcnn = MTCNN(image_size=160, margin=0)
-    resnet = InceptionResnetV1(pretrained='vggface2').eval()
     person_crop = mtcnn(person, save_path=person_crop_path)
     person_id_crop = mtcnn(person_id, save_path=person_id_crop_path)
 
@@ -66,6 +71,12 @@ def crop_comp_img(person, person_id):
     img2 = imageEncoder(person_id_compare)
     cos_scores = util.pytorch_cos_sim(img1, img2)
     score = round(float(cos_scores[0][0]) * 100, 2)
+    
+    # Free memory
+    del person_crop, person_id_crop, person_crop_embedding, person_id_crop_embedding, img1, img2
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return score, person_compare, person_id_compare
 
 @app.post("/compare/")
@@ -74,9 +85,22 @@ async def compare_images(file1: UploadFile = File(...), file2: UploadFile = File
         logging.debug("Received images for comparison")
         image1 = Image.open(io.BytesIO(await file1.read()))
         image2 = Image.open(io.BytesIO(await file2.read()))
+        
+        # Resize images to reduce memory usage
+        image1 = image1.resize((160, 160))
+        image2 = image2.resize((160, 160))
+        
+        load_models()
         score, img1, img2 = crop_comp_img(image1, image2)
         result = "Same Person" if score >= 60 else "Not the same Person"
         logging.debug(f"Comparison result: {result} with score: {score}")
+        
+        # Delete temporary files
+        if os.path.exists("person_crop.jpg"):
+            os.remove("person_crop.jpg")
+        if os.path.exists("person_id_crop.jpg"):
+            os.remove("person_id_crop.jpg")
+        
         return JSONResponse(content={"score": score, "result": result})
     except Exception as e:
         logging.error(f"Error in compare_images endpoint: {e}")
@@ -86,4 +110,4 @@ if __name__ == "__main__":
     logging.debug("Starting server...")
     port = os.getenv('PORT', '8000')
     logging.info(f"Binding to port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=int(port))  # Ensure uvicorn is imported
+    uvicorn.run(app, host="0.0.0.0", port=int(port))
