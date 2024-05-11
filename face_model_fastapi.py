@@ -4,17 +4,18 @@
 
 
 
+import os
+import logging
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-import uvicorn
 from PIL import Image
 import torch
 import open_clip
 from sentence_transformers import util
 from facenet_pytorch import MTCNN, InceptionResnetV1
 import io
-import logging
 import cv2
+import uvicorn  # Add this import
 
 # Initialize FastAPI
 app = FastAPI()
@@ -40,28 +41,20 @@ def imageEncoder(img):
 def crop_comp_img(person, person_id):
     logging.debug("Cropping and comparing images...")
     
-    # Generate in-memory file paths
     person_crop_path = "person_crop.jpg"
     person_id_crop_path = "person_id_crop.jpg"
     
-    # Create a face detection pipeline using MTCNN:
     mtcnn = MTCNN(image_size=160, margin=0)
-
-    # Create an inception resnet (in eval mode):
     resnet = InceptionResnetV1(pretrained='vggface2').eval()
-
-    # Get cropped and prewhitened image tensor
     person_crop = mtcnn(person, save_path=person_crop_path)
     person_id_crop = mtcnn(person_id, save_path=person_id_crop_path)
 
     if person_crop is None or person_id_crop is None:
         raise ValueError("Face not detected in one or both images")
     
-    # Calculate embedding (unsqueeze to add batch dimension)
     person_crop_embedding = resnet(person_crop.unsqueeze(0))
     person_id_crop_embedding = resnet(person_id_crop.unsqueeze(0))
     
-    # Or, if using for VGGFace2 classification
     resnet.classify = True
 
     person_crop_probs = resnet(person_crop.unsqueeze(0))
@@ -79,13 +72,10 @@ def crop_comp_img(person, person_id):
 async def compare_images(file1: UploadFile = File(...), file2: UploadFile = File(...)):
     try:
         logging.debug("Received images for comparison")
-        # Read uploaded files
         image1 = Image.open(io.BytesIO(await file1.read()))
         image2 = Image.open(io.BytesIO(await file2.read()))
-
-        # Generate score
         score, img1, img2 = crop_comp_img(image1, image2)
-        result = "Same Person" if score >= 60 else "Not the same Person"  # Adjusted threshold
+        result = "Same Person" if score >= 60 else "Not the same Person"
         logging.debug(f"Comparison result: {result} with score: {score}")
         return JSONResponse(content={"score": score, "result": result})
     except Exception as e:
@@ -94,4 +84,6 @@ async def compare_images(file1: UploadFile = File(...), file2: UploadFile = File
 
 if __name__ == "__main__":
     logging.debug("Starting server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = os.getenv('PORT', '8000')
+    logging.info(f"Binding to port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=int(port))  # Ensure uvicorn is imported
